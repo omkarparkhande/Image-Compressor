@@ -6,6 +6,7 @@ import io
 import os
 import requests
 import re
+import time
 
 class ImageCompressorApp:
     def __init__(self, root):
@@ -14,6 +15,7 @@ class ImageCompressorApp:
         self.root.geometry("600x500")
         self.root.configure(bg="#F4F4F4")
         self.output_folder = None
+        self.debug = True  # Enable debug logging
 
         # Styling variables
         self.bg_color = "#F4F4F4"
@@ -23,6 +25,9 @@ class ImageCompressorApp:
         self.font_title = ("Helvetica", 16, "bold") if self.is_font_available("Helvetica") else ("Arial", 16, "bold")
         self.font_button = ("Helvetica", 12, "bold") if self.is_font_available("Helvetica") else ("Arial", 12, "bold")
         self.font_label = ("Helvetica", 10) if self.is_font_available("Helvetica") else ("Arial", 10)
+
+        # Check WebP support
+        self.webp_supported = self.check_webp_support()
 
         # Main frame
         self.main_frame = tk.Frame(self.root, bg=self.bg_color, padx=20, pady=20)
@@ -69,246 +74,315 @@ class ImageCompressorApp:
         except TclError:
             return False
 
+    def check_webp_support(self):
+        try:
+            img = Image.new('RGB', (10, 10))
+            buffer = io.BytesIO()
+            img.save(buffer, format='WEBP')
+            return True
+        except Exception:
+            self.status_label.config(text="Warning: WebP support is not available; may affect compression")
+            return False
+
     def select_output_folder(self):
         folder = filedialog.askdirectory(title="Select Output Folder")
         if folder:
-            self.output_folder = folder
-            self.status_label.config(text=f"Output folder selected: {folder}")
+            try:
+                folder = os.path.abspath(folder)  # Ensure absolute path
+                if not os.path.exists(folder):
+                    os.makedirs(folder, exist_ok=True)
+                if not os.access(folder, os.W_OK):
+                    self.status_label.config(text="Error: Selected folder is not writable")
+                    return
+                self.output_folder = folder
+                self.status_label.config(text=f"Output folder selected: {folder}")
+                if 'OneDrive' in folder:
+                    self.status_label.config(text=f"Output folder selected: {folder}\nWarning: Using a OneDrive folder may cause sync issues. Consider a local folder.")
+                if self.debug:
+                    print(f"Output folder set to: {self.output_folder}")
+            except Exception as e:
+                self.status_label.config(text=f"Error setting output folder: {str(e)}")
         else:
             self.status_label.config(text="No output folder selected")
 
     def compress_image(self, image, output_path, max_size=102400):
-        # Check initial size
-        buffer = io.BytesIO()
-        image.save(buffer, format=image.format if image.format in ['JPEG', 'PNG'] else 'JPEG')
-        if buffer.tell() <= max_size:
-            image.save(output_path, format=image.format if image.format in ['JPEG', 'PNG'] else 'JPEG')
-            return output_path, buffer.tell()
+        try:
+            output_path = os.path.abspath(output_path)  # Ensure absolute path
+            output_dir = os.path.dirname(output_path)
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
 
-        format = image.format if image.format in ['JPEG', 'PNG'] else 'JPEG'
+            if self.debug:
+                print(f"Attempting to save to: {output_path}")
 
-        # Try original format compression
-        if format == 'JPEG':
-            for quality in range(95, 9, -5):
-                buffer = io.BytesIO()
-                image.save(buffer, format='JPEG', quality=quality)
-                size = buffer.tell()
-                if size <= max_size:
-                    image.save(output_path, format='JPEG', quality=quality)
-                    return output_path, size
-            image.save(output_path, format='JPEG', quality=10)
-        elif format == 'PNG':
-            palette_image = image.convert('P', palette=Image.ADAPTIVE, colors=256)
+            # Track the format being saved
+            saved_format = image.format if image.format in ['JPEG', 'PNG'] else 'JPEG'
+
+            # Check initial size
             buffer = io.BytesIO()
-            palette_image.save(buffer, format='PNG', optimize=True)
-            size = buffer.tell()
-            if size <= max_size:
-                palette_image.save(output_path, format='PNG', optimize=True)
-                return output_path, size
-            factor = 1
-            while True:
-                current_width = int(palette_image.width / factor)
-                current_height = int(palette_image.height / factor)
-                if current_width < 1 or current_height < 1:
-                    break
-                resized_image = palette_image.resize((current_width, current_height), Image.LANCZOS)
-                buffer = io.BytesIO()
-                resized_image.save(buffer, format='PNG', optimize=True)
-                size = buffer.tell()
-                if size <= max_size:
-                    resized_image.save(output_path, format='PNG', optimize=True)
-                    return output_path, size
-                factor *= 2
-            if 'resized_image' in locals() and current_width > 0 and current_height > 0:
-                resized_image.save(output_path, format='PNG', optimize=True)
+            image.save(buffer, format=saved_format)
+            if buffer.tell() <= max_size:
+                image.save(output_path, format=saved_format)
+                saved_format = saved_format  # Already set
             else:
-                palette_image.save(output_path, format='PNG', optimize=True)
-        else:
-            image.save(output_path, format='JPEG')
+                # Try original format compression
+                if saved_format == 'JPEG':
+                    for quality in range(95, 9, -5):
+                        buffer = io.BytesIO()
+                        image.save(buffer, format='JPEG', quality=quality)
+                        size = buffer.tell()
+                        if size <= max_size:
+                            image.save(output_path, format='JPEG', quality=quality)
+                            saved_format = 'JPEG'
+                            break
+                    else:
+                        image.save(output_path, format='JPEG', quality=10)
+                        saved_format = 'JPEG'
+                elif saved_format == 'PNG':
+                    palette_image = image.convert('P', palette=Image.ADAPTIVE, colors=256)
+                    buffer = io.BytesIO()
+                    palette_image.save(buffer, format='PNG', optimize=True)
+                    size = buffer.tell()
+                    if size <= max_size:
+                        palette_image.save(output_path, format='PNG', optimize=True)
+                        saved_format = 'PNG'
+                    else:
+                        factor = 1
+                        while True:
+                            current_width = int(palette_image.width / factor)
+                            current_height = int(palette_image.height / factor)
+                            if current_width < 1 or current_height < 1:
+                                break
+                            resized_image = palette_image.resize((current_width, current_height), Image.LANCZOS)
+                            buffer = io.BytesIO()
+                            resized_image.save(buffer, format='PNG', optimize=True)
+                            size = buffer.tell()
+                            if size <= max_size:
+                                resized_image.save(output_path, format='PNG', optimize=True)
+                                saved_format = 'PNG'
+                                break
+                            factor *= 2
+                        else:
+                            if 'resized_image' in locals() and current_width > 0 and current_height > 0:
+                                resized_image.save(output_path, format='PNG', optimize=True)
+                            else:
+                                palette_image.save(output_path, format='PNG', optimize=True)
+                            saved_format = 'PNG'
+                else:
+                    image.save(output_path, format='JPEG')
+                    saved_format = 'JPEG'
 
-        compressed_size = os.path.getsize(output_path)
-        if compressed_size <= max_size:
-            return output_path, compressed_size
-        else:
-            webp_output_path = os.path.splitext(output_path)[0] + '.webp'
-            for webp_quality in range(100, 9, -10):
-                buffer = io.BytesIO()
-                image.save(buffer, format='WEBP', quality=webp_quality, lossless=False)
-                webp_size = buffer.tell()
-                if webp_size <= max_size:
-                    image.save(webp_output_path, format='WEBP', quality=webp_quality, lossless=False)
-                    return webp_output_path, webp_size
-            image.save(webp_output_path, format='WEBP', quality=10, lossless=False)
-            return webp_output_path, os.path.getsize(webp_output_path)
+            # Check if file exists after initial save
+            if not os.path.exists(output_path):
+                raise IOError(f"Failed to save file: {output_path}")
+
+            compressed_size = os.path.getsize(output_path)
+            if compressed_size <= max_size:
+                final_path = output_path
+            else:
+                if not self.webp_supported:
+                    raise IOError(f"File too large and WebP not supported: {output_path}")
+                webp_output_path = os.path.splitext(output_path)[0] + '.webp'
+                for webp_quality in range(100, 9, -10):
+                    buffer = io.BytesIO()
+                    image.save(buffer, format='WEBP', quality=webp_quality, lossless=False)
+                    webp_size = buffer.tell()
+                    if webp_size <= max_size:
+                        image.save(webp_output_path, format='WEBP', quality=webp_quality, lossless=False)
+                        saved_format = 'WEBP'
+                        break
+                else:
+                    image.save(webp_output_path, format='WEBP', quality=10, lossless=False)
+                    saved_format = 'WEBP'
+                if not os.path.exists(webp_output_path):
+                    raise IOError(f"Failed to save file: {webp_output_path}")
+                final_path = webp_output_path
+                compressed_size = os.path.getsize(webp_output_path)
+
+            # Validate the saved image by attempting to open it
+            try:
+                with Image.open(final_path) as test_image:
+                    test_image.verify()  # Verify image integrity
+            except Exception as e:
+                raise IOError(f"Saved image is corrupted: {final_path}, Error: {str(e)}")
+
+            # Slight delay to allow filesystem/OneDrive sync (if applicable)
+            time.sleep(0.5)
+
+            return final_path, compressed_size
+
+        except (PermissionError, OSError) as e:
+            raise IOError(f"Error saving image to {output_path}: {str(e)}")
 
     def select_files(self):
-        # Create a new window for URL input and name input
         url_window = tk.Toplevel(self.root)
         url_window.title("Enter Image URLs and Names")
         url_window.geometry("800x400")
         url_window.configure(bg=self.bg_color)
 
-        # Main frame for the new window
         url_main_frame = tk.Frame(url_window, bg=self.bg_color, padx=20, pady=20)
         url_main_frame.pack(fill="both", expand=True)
 
-        # Two-column layout
         left_frame = tk.Frame(url_main_frame, bg=self.bg_color)
         left_frame.pack(side="left", fill="both", expand=True, padx=10)
 
         right_frame = tk.Frame(url_main_frame, bg=self.bg_color)
         right_frame.pack(side="right", fill="both", expand=True, padx=10)
 
-        # Left column: URL input
         url_label = tk.Label(
-            left_frame, text="Enter Image URLs:", font=self.font_label,
+            left_frame, text="Enter Image URLs (one per line):", font=self.font_label,
             bg=self.bg_color, fg=self.text_color
         )
         url_label.pack(anchor="w")
 
-        # Canvas for scrollable URL entries
-        url_canvas = tk.Canvas(left_frame, bg=self.bg_color, highlightthickness=0)
-        url_scrollbar = tk.Scrollbar(left_frame, orient="vertical", command=url_canvas.yview)
-        url_scrollable_frame = tk.Frame(url_canvas, bg=self.bg_color)
+        url_text_frame = tk.Frame(left_frame, bg=self.bg_color)
+        url_text_frame.pack(fill="both", expand=True)
 
-        url_scrollable_frame.bind(
-            "<Configure>",
-            lambda e: url_canvas.configure(scrollregion=url_canvas.bbox("all"))
-        )
-
-        url_canvas.create_window((0, 0), window=url_scrollable_frame, anchor="nw")
-        url_canvas.configure(yscrollcommand=url_scrollbar.set)
-
-        url_canvas.pack(side="left", fill="both", expand=True)
+        url_scrollbar = tk.Scrollbar(url_text_frame, orient="vertical")
         url_scrollbar.pack(side="right", fill="y")
 
-        # Right column: Name input
+        url_text = tk.Text(
+            url_text_frame, font=self.font_label, width=50, height=15, bg="white",
+            fg=self.text_color, yscrollcommand=url_scrollbar.set
+        )
+        url_text.pack(side="left", fill="both", expand=True)
+        url_scrollbar.config(command=url_text.yview)
+
         name_label = tk.Label(
-            right_frame, text="Compressed Image Names:", font=self.font_label,
+            right_frame, text="Compressed Image Names (one per line):", font=self.font_label,
             bg=self.bg_color, fg=self.text_color
         )
         name_label.pack(anchor="w")
 
-        # Canvas for scrollable name entries
-        name_canvas = tk.Canvas(right_frame, bg=self.bg_color, highlightthickness=0)
-        name_scrollbar = tk.Scrollbar(right_frame, orient="vertical", command=name_canvas.yview)
-        name_scrollable_frame = tk.Frame(name_canvas, bg=self.bg_color)
+        name_text_frame = tk.Frame(right_frame, bg=self.bg_color)
+        name_text_frame.pack(fill="both", expand=True)
 
-        name_scrollable_frame.bind(
-            "<Configure>",
-            lambda e: name_canvas.configure(scrollregion=name_canvas.bbox("all"))
-        )
-
-        name_canvas.create_window((0, 0), window=name_scrollable_frame, anchor="nw")
-        name_canvas.configure(yscrollcommand=name_scrollbar.set)
-
-        name_canvas.pack(side="left", fill="both", expand=True)
+        name_scrollbar = tk.Scrollbar(name_text_frame, orient="vertical")
         name_scrollbar.pack(side="right", fill="y")
 
-        # Lists to store URL and name entries
-        self.url_entries = []
-        self.name_entries = []
-
-        # Add initial URL and name entry pair
-        self.add_url_entry(url_scrollable_frame, name_scrollable_frame, 1)
-
-        # Add URL button
-        add_url_button = tk.Button(
-            left_frame, text="Add URL", font=self.font_button,
-            bg=self.accent_color, fg="white", activebackground=self.hover_color,
-            activeforeground="white", command=lambda: self.add_url_entry(url_scrollable_frame, name_scrollable_frame, len(self.url_entries) + 1), relief="flat", padx=10, pady=5
+        name_text = tk.Text(
+            name_text_frame, font=self.font_label, width=50, height=15, bg="white",
+            fg=self.text_color, yscrollcommand=name_scrollbar.set
         )
-        add_url_button.pack(pady=5)
-        add_url_button.bind("<Enter>", lambda e: add_url_button.config(bg=self.hover_color))
-        add_url_button.bind("<Leave>", lambda e: add_url_button.config(bg=self.accent_color))
+        name_text.pack(side="left", fill="both", expand=True)
+        name_scrollbar.config(command=name_text.yview)
 
-        # Download and Compress button
         compress_button = tk.Button(
             left_frame, text="Download and Compress", font=self.font_button,
             bg=self.accent_color, fg="white", activebackground=self.hover_color,
-            activeforeground="white", command=lambda: self.download_and_compress(url_window, self.url_entries, self.name_entries), relief="flat", padx=10, pady=5
+            activeforeground="white", command=lambda: self.download_and_compress(url_window, url_text, name_text), relief="flat", padx=10, pady=5
         )
         compress_button.pack(pady=5)
         compress_button.bind("<Enter>", lambda e: compress_button.config(bg=self.hover_color))
         compress_button.bind("<Leave>", lambda e: compress_button.config(bg=self.accent_color))
 
-    def add_url_entry(self, url_frame, name_frame, index):
-        # URL entry
-        url_entry = tk.Entry(url_frame, font=self.font_label, width=50)
-        url_entry.pack(pady=5)
-        self.url_entries.append(url_entry)
-
-        # Name entry with default placeholder
-        name_entry = tk.Entry(name_frame, font=self.font_label, width=50)
-        name_entry.insert(0, f"image_{index}")
-        name_entry.pack(pady=5)
-        self.name_entries.append(name_entry)
-
-    def download_and_compress(self, url_window, url_entries, name_entries):
+    def download_and_compress(self, url_window, url_text, name_text):
         if not self.output_folder:
-            self.output_folder = os.getcwd()
+            self.output_folder = os.path.abspath(os.getcwd())
             self.status_label.config(text=f"No output folder selected; using {self.output_folder}")
+            if self.debug:
+                print(f"Default output folder: {self.output_folder}")
 
-        total_urls = len([entry.get() for entry in url_entries if entry.get().strip()])
-        if total_urls == 0:
+        try:
+            if not os.path.exists(self.output_folder):
+                os.makedirs(self.output_folder, exist_ok=True)
+            if not os.access(self.output_folder, os.W_OK):
+                self.status_label.config(text=f"Error: Output folder {self.output_folder} is not writable")
+                return
+        except Exception as e:
+            self.status_label.config(text=f"Error accessing output folder: {str(e)}")
+            return
+
+        urls = [url.strip() for url in url_text.get("1.0", tk.END).splitlines() if url.strip()]
+        names = [name.strip() for name in name_text.get("1.0", tk.END).splitlines() if name.strip()]
+
+        if not urls:
             self.status_label.config(text="No URLs provided")
             return
 
-        # Track used filenames to avoid conflicts
+        if len(urls) != len(names):
+            self.status_label.config(text="Error: Number of URLs and names must match")
+            return
+
+        total_urls = len(urls)
         used_filenames = set()
 
-        for index, (url_entry, name_entry) in enumerate(zip(url_entries, name_entries), 1):
-            url = url_entry.get().strip()
-            if not url:
-                continue
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            'Accept': 'image/jpeg,image/png,image/webp,image/*,*/*;q=0.8'
+        }
+        fallback_headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15',
+            'Accept': 'image/*,*/*;q=0.8'
+        }
 
-            self.status_label.config(text=f"Processing {index} of {total_urls} images...")
+        for index, (url, custom_name) in enumerate(zip(urls, names), 1):
+            self.status_label.config(text=f"Processing {index} of {total_urls} images: {url}")
             self.root.update()
 
             try:
-                # Download image
-                response = requests.get(url, timeout=10)
-                response.raise_for_status()
+                try:
+                    response = requests.get(url, headers=headers, timeout=10)
+                    response.raise_for_status()
+                except requests.HTTPError as e:
+                    if response.status_code == 406:
+                        if self.debug:
+                            print(f"406 Error for {url}, retrying with fallback headers: {response.text[:100]}...")
+                        response = requests.get(url, headers=fallback_headers, timeout=10)
+                        response.raise_for_status()
+
                 content_type = response.headers.get('content-type', '')
                 if not content_type.startswith('image/'):
                     self.status_label.config(text=f"Error: {url} is not an image")
+                    if self.debug:
+                        print(f"Invalid content-type: {content_type}")
                     continue
 
-                # Open image
                 image = Image.open(io.BytesIO(response.content))
                 if image.format not in ['JPEG', 'PNG', 'GIF', 'BMP']:
                     image = image.convert('RGB')
 
-                # Get and sanitize custom name
-                custom_name = name_entry.get().strip()
                 if not custom_name:
                     custom_name = f"downloaded_image_{index}"
-
-                # Remove invalid filename characters
                 custom_name = re.sub(r'[<>:"/\\|?*]', '', custom_name)
                 if not custom_name:
                     custom_name = f"downloaded_image_{index}"
 
-                # Determine extension
                 ext = '.jpg' if image.format == 'JPEG' else '.png' if image.format == 'PNG' else '.jpg'
                 base_name = custom_name
-                output_filename = f"{base_name}{ext}"
+                output_filename = f"{base_name}_compressed{ext}"
                 output_path = os.path.join(self.output_folder, output_filename)
 
-                # Handle filename conflicts
                 counter = 1
                 while output_filename.lower() in used_filenames or os.path.exists(output_path):
-                    output_filename = f"{base_name}{counter}{ext}"
+                    output_filename = f"{base_name}_compressed_{counter}{ext}"
                     output_path = os.path.join(self.output_folder, output_filename)
                     counter += 1
                 used_filenames.add(output_filename.lower())
 
-                # Compress image
-                final_path, size = self.compress_image(image, output_path)
-                self.status_label.config(text=f"Compressed {os.path.basename(final_path)} ({size} bytes)")
+                if self.debug:
+                    print(f"Saving {output_filename} to: {output_path}")
 
+                final_path, size = self.compress_image(image, output_path)
+                if os.path.exists(final_path):
+                    self.status_label.config(text=f"Compressed {os.path.basename(final_path)} ({size} bytes) to {final_path}")
+                    if self.debug:
+                        print(f"Success: File saved to {final_path}")
+                else:
+                    self.status_label.config(text=f"Error: Failed to save {os.path.basename(final_path)} to {final_path}")
+                    if self.debug:
+                        print(f"Failure: File not found at {final_path}")
+                    continue
+
+            except requests.HTTPError as e:
+                self.status_label.config(text=f"Error: 406 Client Error for {url}. Server may block automated requests.")
+                if self.debug:
+                    print(f"HTTP Error: {str(e)}, Response: {response.text[:100]}...")
+                continue
             except (requests.RequestException, IOError) as e:
                 self.status_label.config(text=f"Error processing {url}: {str(e)}")
+                if self.debug:
+                    print(f"Error: {str(e)}")
                 continue
 
         self.status_label.config(text="Compression complete!")
